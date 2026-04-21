@@ -1,10 +1,12 @@
 import { useState } from "react";
 import HelloKittyPhysics from "./HelloKittyPhysics";
 import MiningCastle from "./MiningCastle";
+import ZenGarden from "./zen-garden/ZenGarden";
 
 const pieces = [
   { id: "physics", label: "Hello Kitty Physics", component: HelloKittyPhysics },
   { id: "mining", label: "Mining Castle", component: MiningCastle },
+  { id: "zen", label: "Zen Garden", component: ZenGarden },
 ];
 
 export default function App() {

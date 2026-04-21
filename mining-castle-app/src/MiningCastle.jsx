@@ -1,19 +1,23 @@
 import { useEffect, useRef } from "react";
 
+// Persists across game switches, resets on full page refresh
+let savedLevel = 0;
+
 // === CONSTANTS ===
-const CELL = 16;
+const CELL = 24;
 const GRAVITY = 0.4;
 const BOUNCE = 0.2;
 const FRICTION = 0.985;
 const MAX_PARTICLES = 800;
 const MINE_INTERVAL = 350;
 const MINE_COUNT = 6;
-const PLOW_RADIUS = 55;
-const SCOOP_RADIUS = 80;
+const PLOW_RADIUS = 75;
+const SCOOP_RADIUS = 110;
 const BUCKET_CAPACITY = 30;
 const GROUND_H = 0.15;
 const CLIFF_W = 0.18;
-const KITTY_SCALE = 1.6;
+const KITTY_SCALE = 3.0;
+const SHRINK_DELAY = 180; // ms before shrinking starts
 
 // === CASTLE LEVELS ===
 const LEVELS = [
@@ -320,6 +324,7 @@ export default function MiningCastle() {
 
     function initLevel(n) {
       level = n;
+      savedLevel = n;
       const shape = LEVELS[n].shape;
       CW = shape[0].length;
       CH = shape.length;
@@ -366,7 +371,7 @@ export default function MiningCastle() {
       },
     };
 
-    initLevel(0);
+    initLevel(savedLevel);
 
     // Layout helpers
     const cliffRight = () => Math.floor(canvas.width * CLIFF_W);
@@ -379,14 +384,14 @@ export default function MiningCastle() {
     const castleY = () => groundY() - CH * CELL;
 
     // Tool toggle button bounds
-    const btnH = 44, btnPad = 14;
-    const btnW = () => st.tool === "pick" ? 80 : 44;
-    const btnX = () => canvas.width - btnW() - btnPad;
+    const btnH = 56, btnPad = 14;
+    const btnW = () => st.tool === "pick" ? 78 : 58;
+    const btnX = () => canvas.width - btnW() - 100;
     const btnY = () => btnPad;
     const hitBtn = (px, py) => px >= btnX() && px <= btnX() + btnW() && py >= btnY() && py <= btnY() + btnH;
     const hitBucket = (px, py) => {
       if (st.bucket.phase !== "shoveling") return false;
-      return Math.hypot(px - st.bucket.pos.x, py - st.bucket.pos.y) < 35;
+      return Math.hypot(px - st.bucket.pos.x, py - st.bucket.pos.y) < 80;
     };
 
     const drawSprite = (x, y, scale, opacity, angle) => {
@@ -400,12 +405,14 @@ export default function MiningCastle() {
       ctx.restore();
     };
 
-    const spawn = (x, y, vx, vy) => {
+    const spawn = (x, y, vx, vy, opts) => {
       if (st.particles.length >= MAX_PARTICLES) st.particles.shift();
       st.particles.push({
         x, y, vx, vy,
-        scale: KITTY_SCALE,
-        ts: 0.2 + Math.pow(Math.random(), 2) * 0.5,
+        scale: (opts && opts.scale) || KITTY_SCALE,
+        ts: (opts && opts.ts) || (0.5 + Math.random() * 1.5),
+        born: (opts && opts.noDelay) ? -9999 : performance.now(),
+        noStack: (opts && opts.noStack) || false,
         angle: 0, av: (Math.random() - 0.5) * 0.1,
         frozen: false, settled: false, sf: 0, opacity: 1,
       });
@@ -415,16 +422,16 @@ export default function MiningCastle() {
       if (!cliffTex) return;
       const tctx = cliffTex.getContext("2d");
       const bs = 4;
-      const radius = 20 + Math.random() * 15;
-      const chunks = 8 + Math.floor(Math.random() * 8);
+      const radius = 35 + Math.random() * 25;
+      const chunks = 18 + Math.floor(Math.random() * 14);
       for (let i = 0; i < chunks; i++) {
         const ox = (Math.random() - 0.5) * radius * 2;
         const oy = (Math.random() - 0.5) * radius * 2;
         if (Math.hypot(ox, oy) > radius) continue;
         const bx = Math.floor((mx + ox) / bs) * bs;
         const by = Math.floor((my + oy) / bs) * bs;
-        const bw = bs * (1 + Math.floor(Math.random() * 2));
-        const bh = bs * (1 + Math.floor(Math.random() * 2));
+        const bw = bs * (1 + Math.floor(Math.random() * 3));
+        const bh = bs * (1 + Math.floor(Math.random() * 3));
         tctx.clearRect(bx, by, bw, bh);
       }
     };
@@ -434,14 +441,18 @@ export default function MiningCastle() {
       // Damage cliff at click point
       const mx = cx - 10 - Math.random() * 20;
       damageCliff(mx, y);
+      // Max vx: let them fly across most of the field
+      const maxVx = 55;
       for (let i = 0; i < MINE_COUNT; i++) {
-        const angle = (Math.random() - 0.3) * 1.2;
-        const spd = 5 + Math.random() * 10;
+        const angle = (Math.random() - 0.4) * 2.2;
+        const spd = 6 + Math.random() * 14 + Math.pow(Math.random(), 2) * 10;
+        let vx = Math.cos(angle) * spd + Math.random() * 6;
+        vx = Math.min(vx, maxVx); // clamp so they don't reach the castle
         spawn(
           cx + 2 + Math.random() * 8,
-          y + (Math.random() - 0.5) * 40,
-          Math.cos(angle) * spd,
-          Math.sin(angle) * spd - 2
+          y + (Math.random() - 0.5) * 50,
+          vx,
+          Math.sin(angle) * spd - 1 - Math.random() * 4
         );
       }
       st.swingAngle = -0.9;
@@ -499,7 +510,8 @@ export default function MiningCastle() {
         const a = -Math.PI * 0.5 + (Math.random() - 0.5) * Math.PI * 1.2;
         const spd = 6 + Math.random() * 10;
         spawn(cx + (Math.random() - 0.5) * CW * CELL * 0.5, cy,
-          Math.cos(a) * spd, Math.sin(a) * spd);
+          Math.cos(a) * spd, Math.sin(a) * spd,
+          { scale: 1.6, ts: 0.2 + Math.pow(Math.random(), 2) * 0.5, noDelay: true, noStack: true });
       }
     };
 
@@ -533,7 +545,8 @@ export default function MiningCastle() {
         p.x += p.vx; p.y += p.vy;
         p.angle += p.av; p.vx *= FRICTION;
 
-        if (p.scale > p.ts) p.scale = Math.max(p.ts, p.scale - 0.035);
+        if (p.scale > p.ts && performance.now() - p.born > SHRINK_DELAY)
+          p.scale = Math.max(p.ts, p.scale - 0.035);
 
         const hh = sh * p.scale * 0.35;
         const hw = sw * p.scale * 0.35;
@@ -545,14 +558,56 @@ export default function MiningCastle() {
           p.vx *= 0.8;
           p.av *= 0.7;
         }
+        // Deflect off settled particles (creates natural piling)
+        if (!p.noStack) {
+          for (let j = 0; j < st.particles.length; j++) {
+            if (j === i) continue;
+            const q = st.particles[j];
+            if (!q.settled) continue;
+            const qhh = sh * q.scale * 0.35;
+            const qhw = sw * q.scale * 0.35;
+            const dx = p.x - q.x, dy = p.y - q.y;
+            const overlapX = (hw + qhw) - Math.abs(dx);
+            const overlapY = (hh + qhh) - Math.abs(dy);
+            if (overlapX > 0 && overlapY > 0) {
+              if (overlapX < overlapY) {
+                // Horizontal deflection - gentle nudge
+                const dir = dx > 0 ? 1 : -1;
+                p.x += dir * overlapX;
+                p.vx = dir * Math.max(0.5, Math.abs(p.vx) * 0.2);
+                p.vy *= 0.8;
+              } else if (dy < 0) {
+                // Landing on top
+                p.y = q.y - qhh - hh;
+                p.vy *= -BOUNCE * 0.2;
+                p.vx *= 0.6;
+                p.vx += (Math.random() - 0.5) * 1.5;
+              }
+            }
+          }
+        }
         // Walls
         if (p.x - hw < cr) { p.x = cr + hw; p.vx = Math.abs(p.vx) * BOUNCE; }
         if (p.x + hw > W) { p.x = W - hw; p.vx = -Math.abs(p.vx) * BOUNCE; }
         // Ceiling
         if (p.y - hh < 0) { p.y = hh; p.vy = Math.abs(p.vy) * BOUNCE; }
 
-        // Settle
-        if (Math.abs(p.vx) + Math.abs(p.vy) < 0.5 && p.y + hh >= gy - 2) {
+        // Settle (on ground or on other particles)
+        const nearGround = p.y + hh >= gy - 2;
+        let onStack = false;
+        if (!nearGround && !p.noStack) {
+          for (let j = 0; j < st.particles.length; j++) {
+            if (j === i) continue;
+            const q = st.particles[j];
+            if (!q.settled) continue;
+            const qhh = sh * q.scale * 0.35;
+            const qhw = sw * q.scale * 0.35;
+            if (Math.abs(p.x - q.x) < (hw + qhw) && Math.abs(p.y - (q.y - qhh - hh)) < 4) {
+              onStack = true; break;
+            }
+          }
+        }
+        if (Math.abs(p.vx) + Math.abs(p.vy) < 1.2 && (nearGround || onStack)) {
           p.sf++;
           if (p.sf > 8) {
             p.settled = true; p.vx = p.vy = p.av = 0; p.scale = p.ts;
@@ -609,20 +664,50 @@ export default function MiningCastle() {
         }
       }
 
+      // Support check: unsettle particles that lost support
+      for (const p of st.particles) {
+        if (!p.settled || p.noStack) continue;
+        const hh = sh * p.scale * 0.35;
+        const hw = sw * p.scale * 0.35;
+        const nearGround = p.y + hh >= gy - 3;
+        if (nearGround) continue;
+        // Check if any settled particle supports from below
+        let supported = false;
+        for (const q of st.particles) {
+          if (q === p || !q.settled) continue;
+          const qhh = sh * q.scale * 0.35;
+          const qhw = sw * q.scale * 0.35;
+          if (Math.abs(p.x - q.x) < (hw + qhw) && q.y > p.y && q.y - p.y < (hh + qhh + 5)) {
+            supported = true; break;
+          }
+        }
+        if (!supported) {
+          p.settled = false;
+          p.sf = 0;
+          p.vy = 0.5;
+        }
+      }
+
       // Bucket pour emission
       if (st.bucket.phase === "pouring") {
         st.bucket.pourAngle = Math.min(st.bucket.pourAngle + 0.06, 1.3);
         if (st.bucket.pourAngle > 0.4 && st.bucket.pourRemaining > 0) {
-          const emit = Math.min(st.bucket.pourRemaining, 1 + Math.floor(Math.random() * 2));
-          for (let i = 0; i < emit; i++) {
+          // Try multiple emissions per frame - smaller ones more likely
+          const attempts = 3;
+          for (let a = 0; a < attempts && st.bucket.pourRemaining > 0; a++) {
+            const pourScale = 0.6 + Math.random() * 2.0;
+            // Smaller = higher chance of emitting this frame
+            const emitChance = 0.15 + (1 - pourScale / 2.6) * 0.35;
+            if (Math.random() > emitChance) continue;
             const rimOff = 18;
             const rimX = st.mouse.x + Math.cos(st.bucket.pourAngle - 0.3) * rimOff;
             const rimY = st.mouse.y + Math.sin(st.bucket.pourAngle - 0.3) * rimOff;
             spawn(
-              rimX + (Math.random() - 0.5) * 4,
-              rimY,
-              (Math.random() - 0.3) * 0.8,
-              0.5 + Math.random() * 0.8
+              rimX + (Math.random() - 0.5) * 12,
+              rimY + (Math.random() - 0.5) * 6,
+              (Math.random() - 0.5) * 2.5,
+              0.3 + Math.random() * 1.0,
+              { scale: pourScale, ts: pourScale, noDelay: true, noStack: true }
             );
             st.bucket.pourRemaining--;
           }
@@ -733,113 +818,9 @@ export default function MiningCastle() {
         if (!p.settled) drawSprite(p.x, p.y, p.scale, p.opacity, p.angle);
       }
 
-      // Cursor tool
-      if (st.tool === "pick") {
-        const pickScale = 2.5;
-        ctx.save();
-        ctx.imageSmoothingEnabled = false;
-        ctx.translate(st.mouse.x, st.mouse.y);
-        ctx.rotate(st.swingAngle - 0.3);
-        ctx.drawImage(pickSprite,
-          -pickSprite.width * pickScale / 2,
-          -pickSprite.height * pickScale * 0.1,
-          pickSprite.width * pickScale,
-          pickSprite.height * pickScale);
-        ctx.restore();
-      } else {
-        const bScale = 3;
-        const bw = bucketSprite.width * bScale;
-        const bh = bucketSprite.height * bScale;
-
-        // Draw placed bucket on ground (shoveling or pouring phase)
-        if (st.bucket.phase === "shoveling" || st.bucket.phase === "pouring") {
-          ctx.save();
-          ctx.imageSmoothingEnabled = false;
-          ctx.translate(st.bucket.pos.x, st.bucket.pos.y);
-          ctx.drawImage(bucketSprite, -bw/2, -bh*0.6, bw, bh);
-          // Fill level in placed bucket
-          if (st.bucket.count > 0) {
-            const fillPct = st.bucket.count / BUCKET_CAPACITY;
-            const fillH = bh * 0.4 * fillPct;
-            const fillY = bh * 0.35 - fillH - bh * 0.6;
-            ctx.fillStyle = "rgba(255,180,200,0.7)";
-            ctx.fillRect(-bw * 0.28, fillY, bw * 0.56, fillH);
-          }
-          // Progress bar above placed bucket
-          if (st.bucket.count > 0) {
-            const barW = 36, barH = 5;
-            const fillPct = st.bucket.count / BUCKET_CAPACITY;
-            ctx.fillStyle = "rgba(0,0,0,0.25)";
-            ctx.fillRect(-barW/2, -bh*0.6 - 12, barW, barH);
-            ctx.fillStyle = fillPct >= 1 ? "#FF6B9D" : "#C47A9A";
-            ctx.fillRect(-barW/2, -bh*0.6 - 12, barW * fillPct, barH);
-            ctx.strokeStyle = "rgba(0,0,0,0.4)";
-            ctx.lineWidth = 1;
-            ctx.strokeRect(-barW/2, -bh*0.6 - 12, barW, barH);
-          }
-          ctx.restore();
-        }
-
-        // Cursor
-        if (st.bucket.phase === "placing") {
-          // Show bucket at cursor for placement
-          ctx.save();
-          ctx.imageSmoothingEnabled = false;
-          ctx.globalAlpha = 0.6;
-          ctx.translate(st.mouse.x, st.mouse.y);
-          ctx.drawImage(bucketSprite, -bw/2, -bh*0.6, bw, bh);
-          ctx.restore();
-        } else if (st.bucket.phase === "shoveling") {
-          // Shovel cursor (angled with blade toward ground)
-          const sScale = 2.8;
-          const dipY = st.bucket.scoopDip * 14;
-          ctx.save();
-          ctx.imageSmoothingEnabled = false;
-          ctx.translate(st.mouse.x, st.mouse.y + dipY);
-          ctx.rotate(-0.7); // ~-40 degrees
-          ctx.drawImage(shovelSprite,
-            -shovelSprite.width * sScale * 0.5,
-            -shovelSprite.height * sScale * 0.72,
-            shovelSprite.width * sScale,
-            shovelSprite.height * sScale);
-          ctx.restore();
-          // Show shovel load count
-          if (st.bucket.shovelCount > 0) {
-            const barW = 24, barH = 4;
-            const fillPct = st.bucket.shovelCount / st.bucket.shovelMax;
-            ctx.fillStyle = "rgba(0,0,0,0.2)";
-            ctx.fillRect(st.mouse.x - barW/2, st.mouse.y - 18, barW, barH);
-            ctx.fillStyle = "#FFB0D0";
-            ctx.fillRect(st.mouse.x - barW/2, st.mouse.y - 18, barW * fillPct, barH);
-          }
-        } else if (st.bucket.phase === "carrying") {
-          // Bucket cursor (full, ready to pour)
-          ctx.save();
-          ctx.imageSmoothingEnabled = false;
-          ctx.translate(st.mouse.x, st.mouse.y);
-          ctx.drawImage(bucketSprite, -bw/2, -bh*0.6, bw, bh);
-          // Fill indicator
-          const fillPct = st.bucket.count / BUCKET_CAPACITY;
-          const fillH = bh * 0.4 * fillPct;
-          const fillY = bh * 0.35 - fillH - bh * 0.6;
-          ctx.fillStyle = "rgba(255,180,200,0.7)";
-          ctx.fillRect(-bw * 0.28, fillY, bw * 0.56, fillH);
-          ctx.restore();
-        } else if (st.bucket.phase === "pouring") {
-          // Tipping bucket at cursor
-          const tipAngle = st.bucket.pourAngle;
-          ctx.save();
-          ctx.imageSmoothingEnabled = false;
-          ctx.translate(st.mouse.x, st.mouse.y);
-          ctx.rotate(tipAngle);
-          ctx.drawImage(bucketSprite, -bw/2, -bh*0.6, bw, bh);
-          ctx.restore();
-        }
-      }
-
       // Tool toggle button
       const bx = btnX(), by = btnY(), bw2 = btnW();
-      ctx.fillStyle = "rgba(255,255,255,0.85)";
+      ctx.fillStyle = "rgba(255,255,255,1)";
       ctx.beginPath();
       ctx.roundRect(bx, by, bw2, btnH, 8);
       ctx.fill();
@@ -853,21 +834,123 @@ export default function MiningCastle() {
       ctx.imageSmoothingEnabled = false;
       if (st.tool === "pick") {
         // Show shovel + bucket icon in wider button
+        const ss = 2.5;
         ctx.save();
-        ctx.translate(bx + 22, by + 24);
+        ctx.translate(bx + 18, by + 30);
         ctx.rotate(-0.4);
-        ctx.drawImage(shovelSprite, -10, -16, 20, 32);
+        ctx.drawImage(shovelSprite, -shovelSprite.width*ss/2, -shovelSprite.height*ss*0.55, shovelSprite.width*ss, shovelSprite.height*ss);
         ctx.restore();
-        ctx.drawImage(bucketSprite, bx + 44, by + 6, 28, 32);
+        const bs = 2.8;
+        ctx.drawImage(bucketSprite, bx + 36, by + 20, bucketSprite.width*bs, bucketSprite.height*bs);
       } else {
         // Show pick icon (switch to pick)
+        const ps = 3.0;
         ctx.save();
-        ctx.translate(bx + 22, by + 23);
+        ctx.translate(bx + 29, by + 28);
         ctx.rotate(-0.3);
-        ctx.drawImage(pickSprite, -14, -12, 28, 26);
+        ctx.drawImage(pickSprite, -pickSprite.width*ps/2, -pickSprite.height*ps*0.4, pickSprite.width*ps, pickSprite.height*ps);
         ctx.restore();
       }
       ctx.restore();
+
+      // Cursor tool
+      if (st.tool === "pick") {
+        const pickScale = 4.5;
+        ctx.save();
+        ctx.imageSmoothingEnabled = false;
+        ctx.translate(st.mouse.x, st.mouse.y);
+        ctx.rotate(st.swingAngle - 0.3);
+        ctx.drawImage(pickSprite,
+          -pickSprite.width * pickScale / 2,
+          -pickSprite.height * pickScale * 0.1,
+          pickSprite.width * pickScale,
+          pickSprite.height * pickScale);
+        ctx.restore();
+      } else {
+        const bCursorScale = 4;
+        const bPlacedScale = 10;
+
+        // Draw placed bucket on ground (shoveling or pouring phase)
+        if (st.bucket.phase === "shoveling" || st.bucket.phase === "pouring") {
+          const bw = bucketSprite.width * bPlacedScale;
+          const bh = bucketSprite.height * bPlacedScale;
+          ctx.save();
+          ctx.imageSmoothingEnabled = false;
+          ctx.translate(st.bucket.pos.x, st.bucket.pos.y);
+          ctx.drawImage(bucketSprite, -bw/2, -bh, bw, bh);
+          // Progress bar above placed bucket
+          if (st.bucket.count > 0) {
+            const barW = 36, barH = 5;
+            const fillPct = st.bucket.count / BUCKET_CAPACITY;
+            ctx.fillStyle = "rgba(0,0,0,0.25)";
+            ctx.fillRect(-barW/2, -bh - 12, barW, barH);
+            ctx.fillStyle = fillPct >= 1 ? "#FF6B9D" : "#C47A9A";
+            ctx.fillRect(-barW/2, -bh - 12, barW * fillPct, barH);
+            ctx.strokeStyle = "rgba(0,0,0,0.4)";
+            ctx.lineWidth = 1;
+            ctx.strokeRect(-barW/2, -bh - 12, barW, barH);
+          }
+          ctx.restore();
+        }
+
+        // Cursor
+        const bcw = bucketSprite.width * bCursorScale;
+        const bch = bucketSprite.height * bCursorScale;
+        if (st.bucket.phase === "placing") {
+          // Show bucket at cursor for placement
+          ctx.save();
+          ctx.imageSmoothingEnabled = false;
+          ctx.globalAlpha = 0.6;
+          ctx.translate(st.mouse.x, st.mouse.y);
+          ctx.drawImage(bucketSprite, -bcw/2, -bch*0.6, bcw, bch);
+          ctx.restore();
+        } else if (st.bucket.phase === "shoveling") {
+          // Shovel cursor (angled with blade toward ground)
+          const sScale = 6;
+          const dipY = st.bucket.scoopDip * 14;
+          ctx.save();
+          ctx.imageSmoothingEnabled = false;
+          ctx.translate(st.mouse.x, st.mouse.y + dipY);
+          ctx.rotate(-0.7); // ~-40 degrees
+          ctx.drawImage(shovelSprite,
+            -shovelSprite.width * sScale * 0.5,
+            -shovelSprite.height * sScale * 0.72,
+            shovelSprite.width * sScale,
+            shovelSprite.height * sScale);
+          ctx.restore();
+          // Show shovel load count
+          if (st.bucket.shovelCount > 0) {
+            const barW = 28, barH = 5;
+            const fillPct = st.bucket.shovelCount / st.bucket.shovelMax;
+            ctx.fillStyle = "rgba(0,0,0,0.2)";
+            ctx.fillRect(st.mouse.x - barW/2, st.mouse.y - 70, barW, barH);
+            ctx.fillStyle = "#FFB0D0";
+            ctx.fillRect(st.mouse.x - barW/2, st.mouse.y - 70, barW * fillPct, barH);
+          }
+        } else if (st.bucket.phase === "carrying") {
+          // Bucket cursor (full, ready to pour)
+          ctx.save();
+          ctx.imageSmoothingEnabled = false;
+          ctx.translate(st.mouse.x, st.mouse.y);
+          ctx.drawImage(bucketSprite, -bcw/2, -bch*0.6, bcw, bch);
+          // Fill indicator
+          const fillPct = st.bucket.count / BUCKET_CAPACITY;
+          const fillH = bch * 0.4 * fillPct;
+          const fillY = bch * 0.35 - fillH - bch * 0.6;
+          ctx.fillStyle = "rgba(255,180,200,0.7)";
+          ctx.fillRect(-bcw * 0.28, fillY, bcw * 0.56, fillH);
+          ctx.restore();
+        } else if (st.bucket.phase === "pouring") {
+          // Tipping bucket at cursor
+          const tipAngle = st.bucket.pourAngle;
+          ctx.save();
+          ctx.imageSmoothingEnabled = false;
+          ctx.translate(st.mouse.x, st.mouse.y);
+          ctx.rotate(tipAngle);
+          ctx.drawImage(bucketSprite, -bcw/2, -bch*0.6, bcw, bch);
+          ctx.restore();
+        }
+      }
 
       // Progress text
       const lvlName = LEVELS[level].name;
@@ -940,7 +1023,7 @@ export default function MiningCastle() {
         if (b.phase === "placing") {
           // Place bucket on ground
           b.pos.x = p.x;
-          b.pos.y = groundY() - 5;
+          b.pos.y = groundY();
           b.phase = "shoveling";
         } else if (b.phase === "shoveling") {
           if (hitBucket(p.x, p.y)) {
@@ -970,29 +1053,7 @@ export default function MiningCastle() {
       st.mouse.x = p.x; st.mouse.y = p.y;
       prevMouse = { x: p.x, y: p.y };
 
-      if (st.tool === "pick" && st.mouse.down) {
-        // Plow settled particles when dragging
-        const speed = Math.hypot(st.mouse.vx, st.mouse.vy);
-        if (speed > 0.3) {
-          const dirX = st.mouse.vx / speed;
-          const dirY = st.mouse.vy / speed;
-          for (const pt of st.particles) {
-            if (!pt.settled) continue;
-            const dx = pt.x - p.x, dy = pt.y - p.y;
-            const dist = Math.hypot(dx, dy);
-            if (dist < PLOW_RADIUS && dist > 1) {
-              const force = Math.min(speed * 1.4, 20);
-              const f = 1 - dist / PLOW_RADIUS;
-              const nx = dx / dist, ny = dy / dist;
-              pt.vx += (dirX * 0.8 + nx * 0.2) * force * f;
-              pt.vy += (dirY * 0.8 + ny * 0.2) * force * f - 1.5;
-              pt.settled = false;
-              pt.sf = 0;
-              pt.av = (Math.random() - 0.5) * 0.15;
-            }
-          }
-        }
-      } else if (st.tool === "bucket" && st.mouse.down && st.bucket.phase === "shoveling") {
+      if (st.tool === "bucket" && st.mouse.down && st.bucket.phase === "shoveling") {
         // Continuous scooping while dragging with shovel
         if (!hitBucket(p.x, p.y)) {
           shovelScoop(p.x, p.y);
