@@ -413,6 +413,7 @@ export default function MiningCastle() {
         ts: (opts && opts.ts) || (0.5 + Math.random() * 1.5),
         born: (opts && opts.noDelay) ? -9999 : performance.now(),
         noStack: (opts && opts.noStack) || false,
+        gMul: (opts && opts.gMul) || 1,
         angle: 0, av: (Math.random() - 0.5) * 0.1,
         frozen: false, settled: false, sf: 0, opacity: 1,
       });
@@ -532,7 +533,7 @@ export default function MiningCastle() {
         const p = st.particles[i];
         if (p.settled) continue;
 
-        p.vy += GRAVITY;
+        p.vy += GRAVITY * p.gMul;
         p.x += p.vx; p.y += p.vy;
         p.angle += p.av; p.vx *= FRICTION;
 
@@ -697,11 +698,12 @@ export default function MiningCastle() {
             const rimX = st.mouse.x + Math.cos(st.bucket.pourAngle - 0.3) * rimOff;
             const rimY = st.mouse.y + Math.sin(st.bucket.pourAngle - 0.3) * rimOff;
             spawn(
-              rimX + (Math.random() - 0.5) * 12,
-              rimY + (Math.random() - 0.5) * 6,
-              (Math.random() - 0.5) * 2.5,
-              0.3 + Math.random() * 1.0,
-              { scale: pourScale, ts: pourScale, noDelay: true, noStack: true }
+              rimX + (Math.random() - 0.5) * 14,
+              rimY + (Math.random() - 0.5) * 8,
+              (Math.random() - 0.5) * 3,
+              0.2 + Math.random() * 0.6,
+              { scale: pourScale, ts: pourScale, noDelay: true, noStack: true,
+                gMul: 0.5 + (1 - pourScale / 2.6) * 1.2 }
             );
             st.bucket.pourRemaining--;
           }
@@ -914,12 +916,15 @@ export default function MiningCastle() {
           ctx.restore();
           // Show shovel load count
           if (st.bucket.shovelCount > 0) {
-            const barW = 28, barH = 5;
+            const barW = 36, barH = 5;
             const fillPct = st.bucket.shovelCount / st.bucket.shovelMax;
-            ctx.fillStyle = "rgba(0,0,0,0.2)";
+            ctx.fillStyle = "rgba(0,0,0,0.25)";
             ctx.fillRect(st.mouse.x - barW/2, st.mouse.y - 70, barW, barH);
-            ctx.fillStyle = "#FFB0D0";
+            ctx.fillStyle = fillPct >= 1 ? "#FF6B9D" : "#C47A9A";
             ctx.fillRect(st.mouse.x - barW/2, st.mouse.y - 70, barW * fillPct, barH);
+            ctx.strokeStyle = "rgba(0,0,0,0.4)";
+            ctx.lineWidth = 1;
+            ctx.strokeRect(st.mouse.x - barW/2, st.mouse.y - 70, barW, barH);
           }
         } else if (st.bucket.phase === "carrying") {
           // Bucket cursor (full, ready to pour)
@@ -927,12 +932,6 @@ export default function MiningCastle() {
           ctx.imageSmoothingEnabled = false;
           ctx.translate(st.mouse.x, st.mouse.y);
           ctx.drawImage(bucketSprite, -bcw/2, -bch*0.6, bcw, bch);
-          // Fill indicator
-          const fillPct = st.bucket.count / BUCKET_CAPACITY;
-          const fillH = bch * 0.4 * fillPct;
-          const fillY = bch * 0.35 - fillH - bch * 0.6;
-          ctx.fillStyle = "rgba(255,180,200,0.7)";
-          ctx.fillRect(-bcw * 0.28, fillY, bcw * 0.56, fillH);
           ctx.restore();
         } else if (st.bucket.phase === "pouring") {
           // Tipping bucket at cursor
