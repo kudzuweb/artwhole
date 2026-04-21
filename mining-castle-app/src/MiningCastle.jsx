@@ -9,7 +9,7 @@ const MAX_PARTICLES = 800;
 const MINE_INTERVAL = 350;
 const MINE_COUNT = 12;
 const PLOW_RADIUS = 55;
-const SCOOP_RADIUS = 65;
+const SCOOP_RADIUS = 35;
 const BUCKET_CAPACITY = 30;
 const GROUND_H = 0.15;
 const CLIFF_W = 0.18;
@@ -302,6 +302,15 @@ export default function MiningCastle() {
       // Clear particles between levels
       st.particles = [];
       st.bucket.count = 0;
+      st.bucket.pouring = false;
+      st.bucket.pourRemaining = 0;
+      st.bucket.pourAngle = 0;
+      st.bucket.scoopDip = 0;
+      // Reset cliff
+      cliffTex = createCliffTexture(
+        Math.floor(canvas.width * CLIFF_W),
+        canvas.height
+      );
     }
 
     const st = {
@@ -310,7 +319,7 @@ export default function MiningCastle() {
       lastMine: 0,
       swingAngle: 0,
       tool: "pick",
-      bucket: { count: 0, scooping: false },
+      bucket: { count: 0, pouring: false, pourRemaining: 0, pourAngle: 0, scoopDip: 0 },
     };
 
     initLevel(0);
@@ -349,8 +358,29 @@ export default function MiningCastle() {
       });
     };
 
+    const damageCliff = (mx, my) => {
+      if (!cliffTex) return;
+      const tctx = cliffTex.getContext("2d");
+      const bs = 4;
+      const radius = 20 + Math.random() * 15;
+      const chunks = 8 + Math.floor(Math.random() * 8);
+      for (let i = 0; i < chunks; i++) {
+        const ox = (Math.random() - 0.5) * radius * 2;
+        const oy = (Math.random() - 0.5) * radius * 2;
+        if (Math.hypot(ox, oy) > radius) continue;
+        const bx = Math.floor((mx + ox) / bs) * bs;
+        const by = Math.floor((my + oy) / bs) * bs;
+        const bw = bs * (1 + Math.floor(Math.random() * 2));
+        const bh = bs * (1 + Math.floor(Math.random() * 2));
+        tctx.clearRect(bx, by, bw, bh);
+      }
+    };
+
     const mineAt = (y) => {
       const cx = cliffRight();
+      // Damage cliff at click point
+      const mx = cx - 10 - Math.random() * 20;
+      damageCliff(mx, y);
       for (let i = 0; i < MINE_COUNT; i++) {
         const angle = (Math.random() - 0.3) * 1.2;
         const spd = 5 + Math.random() * 10;
@@ -365,35 +395,42 @@ export default function MiningCastle() {
     };
 
     const scoopAt = (px, py) => {
-      let scooped = 0;
+      if (st.bucket.pouring) return 0;
+      // Gather nearby settled candidates
+      const candidates = [];
       for (let i = st.particles.length - 1; i >= 0; i--) {
-        if (st.bucket.count >= BUCKET_CAPACITY) break;
         const pt = st.particles[i];
         if (!pt.settled) continue;
         const dist = Math.hypot(pt.x - px, pt.y - py);
-        if (dist < SCOOP_RADIUS) {
-          st.particles.splice(i, 1);
-          st.bucket.count++;
-          scooped++;
-        }
+        if (dist < SCOOP_RADIUS) candidates.push({ idx: i, dist, sz: pt.scale });
       }
+      candidates.sort((a, b) => a.dist - b.dist);
+
+      // Smaller kitties = more per scoop
+      const maxScoop = 2 + Math.floor(Math.random() * 4);
+      let scooped = 0;
+      let sizeBank = 1.5; // size budget per scoop
+      const toRemove = [];
+      for (const c of candidates) {
+        if (scooped >= maxScoop || st.bucket.count >= BUCKET_CAPACITY) break;
+        if (sizeBank <= 0) break;
+        toRemove.push(c.idx);
+        st.bucket.count++;
+        scooped++;
+        sizeBank -= c.sz;
+      }
+      toRemove.sort((a, b) => b - a);
+      for (const idx of toRemove) st.particles.splice(idx, 1);
+      if (scooped > 0) st.bucket.scoopDip = 1;
       return scooped;
     };
 
-    const dumpBucket = (px, py) => {
-      const count = st.bucket.count;
-      if (count === 0) return;
-      for (let i = 0; i < count; i++) {
-        const angle = -Math.PI * 0.5 + (Math.random() - 0.5) * 1.0;
-        const spd = 2 + Math.random() * 4;
-        spawn(
-          px + (Math.random() - 0.5) * 20,
-          py - 10,
-          Math.cos(angle) * spd,
-          Math.sin(angle) * spd - 1
-        );
-      }
+    const startPour = () => {
+      if (st.bucket.count <= 0 || st.bucket.pouring) return;
+      st.bucket.pouring = true;
+      st.bucket.pourRemaining = st.bucket.count;
       st.bucket.count = 0;
+      st.bucket.pourAngle = 0;
     };
 
     const fireworkCelebration = () => {
@@ -465,24 +502,63 @@ export default function MiningCastle() {
           p.sf = 0;
         }
 
-        // Absorb into castle cell on contact
+        // Absorb into castle cell on contact (with tolerance)
         if (!complete) {
-          const col = Math.floor((p.x - cxPos) / CELL);
-          const row = Math.floor((p.y - cyPos) / CELL);
-          if (row >= 0 && row < CH && col >= 0 && col < CW) {
-            if (castleFilled[row][col] === false) {
-              castleFilled[row][col] = true;
-              filledCount++;
-              st.particles.splice(i, 1);
-              if (filledCount >= totalCells) {
-                complete = true;
-                celebrationTime = Date.now();
-                fireworkCelebration();
+          const margin = CELL * 0.6;
+          for (let dr = -1; dr <= 1; dr++) {
+            let absorbed = false;
+            for (let dc = -1; dc <= 1; dc++) {
+              const col = Math.floor((p.x - cxPos + dc * margin) / CELL);
+              const row = Math.floor((p.y - cyPos + dr * margin) / CELL);
+              if (row >= 0 && row < CH && col >= 0 && col < CW) {
+                if (castleFilled[row][col] === false) {
+                  castleFilled[row][col] = true;
+                  filledCount++;
+                  st.particles.splice(i, 1);
+                  if (filledCount >= totalCells) {
+                    complete = true;
+                    celebrationTime = Date.now();
+                    fireworkCelebration();
+                  }
+                  absorbed = true;
+                  break;
+                }
               }
-              continue;
             }
+            if (absorbed) break;
           }
         }
+      }
+
+      // Bucket pour emission
+      if (st.bucket.pouring) {
+        st.bucket.pourAngle = Math.min(st.bucket.pourAngle + 0.06, 1.3);
+        if (st.bucket.pourAngle > 0.4 && st.bucket.pourRemaining > 0) {
+          const emit = Math.min(st.bucket.pourRemaining, 1 + Math.floor(Math.random() * 2));
+          for (let i = 0; i < emit; i++) {
+            const rimOff = 18;
+            const rimX = st.mouse.x + Math.cos(st.bucket.pourAngle - 0.3) * rimOff;
+            const rimY = st.mouse.y + Math.sin(st.bucket.pourAngle - 0.3) * rimOff;
+            spawn(
+              rimX + (Math.random() - 0.5) * 4,
+              rimY,
+              (Math.random() - 0.3) * 0.8,
+              0.5 + Math.random() * 0.8
+            );
+            st.bucket.pourRemaining--;
+          }
+        }
+        if (st.bucket.pourRemaining <= 0 && st.bucket.pourAngle >= 1.2) {
+          st.bucket.pouring = false;
+          st.bucket.pourAngle = 0;
+        }
+      }
+
+      // Scoop dip decay
+      if (st.bucket.scoopDip > 0.01) {
+        st.bucket.scoopDip *= 0.82;
+      } else {
+        st.bucket.scoopDip = 0;
       }
 
       // Celebration fireworks + level advance
@@ -524,7 +600,9 @@ export default function MiningCastle() {
       ctx.fillStyle = "#C07088";
       ctx.fillRect(cr, gy, W - cr, 3);
 
-      // Cliff
+      // Cliff - deep rock interior + surface texture
+      ctx.fillStyle = "#3D0F20";
+      ctx.fillRect(0, 0, cr, H);
       if (cliffTex) {
         ctx.imageSmoothingEnabled = false;
         ctx.drawImage(cliffTex, 0, 0);
@@ -592,31 +670,41 @@ export default function MiningCastle() {
       } else {
         // Bucket cursor
         const bScale = 3;
+        const tipAngle = st.bucket.pouring ? st.bucket.pourAngle : 0;
+        const dipY = st.bucket.scoopDip * 12;
         ctx.save();
         ctx.imageSmoothingEnabled = false;
-        ctx.translate(st.mouse.x, st.mouse.y);
+        ctx.translate(st.mouse.x, st.mouse.y + dipY);
+        ctx.rotate(tipAngle);
         ctx.drawImage(bucketSprite,
           -bucketSprite.width * bScale / 2,
           -bucketSprite.height * bScale * 0.3,
           bucketSprite.width * bScale,
           bucketSprite.height * bScale);
-        // Fill level indicator
-        if (st.bucket.count > 0) {
+        // Fill level indicator (only when not pouring)
+        if (st.bucket.count > 0 && !st.bucket.pouring) {
           const fillPct = st.bucket.count / BUCKET_CAPACITY;
           const bw = bucketSprite.width * bScale;
           const bh = bucketSprite.height * bScale;
-          const fillH = bh * 0.5 * fillPct;
-          const fillY = bh * 0.7 - fillH + (-bucketSprite.height * bScale * 0.3);
+          const fillH = bh * 0.45 * fillPct;
+          const fillY = bh * 0.65 - fillH + (-bucketSprite.height * bScale * 0.3);
           ctx.fillStyle = "rgba(255,180,200,0.7)";
-          ctx.fillRect(-bw * 0.32, fillY, bw * 0.64, fillH);
+          ctx.fillRect(-bw * 0.3, fillY, bw * 0.6, fillH);
         }
         ctx.restore();
-        // Count label
-        if (st.bucket.count > 0) {
-          ctx.fillStyle = "#8B2252";
-          ctx.font = "bold 12px monospace";
-          ctx.textAlign = "center";
-          ctx.fillText(st.bucket.count, st.mouse.x, st.mouse.y - 22);
+        // Progress bar above bucket
+        if (st.bucket.count > 0 && !st.bucket.pouring) {
+          const barW = 32, barH = 5;
+          const bx = st.mouse.x - barW / 2;
+          const by = st.mouse.y - 26;
+          const fillPct = st.bucket.count / BUCKET_CAPACITY;
+          ctx.fillStyle = "rgba(0,0,0,0.25)";
+          ctx.fillRect(bx, by, barW, barH);
+          ctx.fillStyle = fillPct >= 1 ? "#FF6B9D" : "#C47A9A";
+          ctx.fillRect(bx, by, barW * fillPct, barH);
+          ctx.strokeStyle = "rgba(0,0,0,0.4)";
+          ctx.lineWidth = 1;
+          ctx.strokeRect(bx, by, barW, barH);
         }
       }
 
@@ -702,12 +790,24 @@ export default function MiningCastle() {
           st.lastMine = Date.now();
         }
       } else {
-        // Bucket: scoop or dump
-        if (st.bucket.count > 0) {
-          // Dump at click position
-          dumpBucket(p.x, p.y);
+        // Bucket mode
+        if (st.bucket.pouring) {
+          // Ignore clicks while pouring
+        } else if (st.bucket.count > 0) {
+          // Check if near any settled particles to scoop more
+          let nearSettled = false;
+          for (const pt of st.particles) {
+            if (pt.settled && Math.hypot(pt.x - p.x, pt.y - p.y) < SCOOP_RADIUS) {
+              nearSettled = true;
+              break;
+            }
+          }
+          if (nearSettled && st.bucket.count < BUCKET_CAPACITY) {
+            scoopAt(p.x, p.y);
+          } else {
+            startPour();
+          }
         } else {
-          // Scoop nearby settled particles
           scoopAt(p.x, p.y);
         }
       }
@@ -743,7 +843,7 @@ export default function MiningCastle() {
             }
           }
         }
-      } else if (st.tool === "bucket" && st.mouse.down && st.bucket.count < BUCKET_CAPACITY) {
+      } else if (st.tool === "bucket" && st.mouse.down && st.bucket.count < BUCKET_CAPACITY && !st.bucket.pouring) {
         // Continuous scooping while dragging with bucket
         scoopAt(p.x, p.y);
       }
