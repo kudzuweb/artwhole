@@ -422,8 +422,8 @@ export default function MiningCastle() {
       if (!cliffTex) return;
       const tctx = cliffTex.getContext("2d");
       const bs = 4;
-      const radius = 35 + Math.random() * 25;
-      const chunks = 18 + Math.floor(Math.random() * 14);
+      const radius = 45 + Math.random() * 35;
+      const chunks = 25 + Math.floor(Math.random() * 20);
       for (let i = 0; i < chunks; i++) {
         const ox = (Math.random() - 0.5) * radius * 2;
         const oy = (Math.random() - 0.5) * radius * 2;
@@ -522,15 +522,6 @@ export default function MiningCastle() {
       const cr = cliffRight();
       const cxPos = castleX();
       const cyPos = castleY();
-
-      // Mining (pick tool only, with pick reach tolerance)
-      if (st.tool === "pick" && st.mouse.down && st.mouse.x < cr + 12 && !complete) {
-        const now = Date.now();
-        if (now - st.lastMine > MINE_INTERVAL) {
-          mineAt(st.mouse.y);
-          st.lastMine = now;
-        }
-      }
 
       // Swing decay
       st.swingAngle *= 0.82;
@@ -684,7 +675,10 @@ export default function MiningCastle() {
         if (!supported) {
           p.settled = false;
           p.sf = 0;
-          p.vy = 0.5;
+          // Tumble sideways with some randomness instead of falling straight
+          p.vx = (Math.random() - 0.5) * 4;
+          p.vy = 0.5; // start falling
+          p.av = (Math.random() - 0.5) * 0.2;
         }
       }
 
@@ -1005,6 +999,24 @@ export default function MiningCastle() {
           st.bucket.count = 0;
           st.bucket.shovelCount = 0;
         } else {
+          // Spill any kitties in bucket/shovel back onto ground
+          const spillCount = st.bucket.count + st.bucket.shovelCount;
+          if (spillCount > 0) {
+            const sx = st.bucket.phase === "placing" ? p.x : st.bucket.pos.x;
+            const sy = groundY() - 10;
+            for (let s = 0; s < spillCount; s++) {
+              const pourScale = 0.6 + Math.random() * 2.0;
+              spawn(
+                sx + (Math.random() - 0.5) * 40,
+                sy - Math.random() * 20,
+                (Math.random() - 0.5) * 5,
+                -1 - Math.random() * 3,
+                { scale: pourScale, ts: pourScale, noDelay: true }
+              );
+            }
+          }
+          st.bucket.count = 0;
+          st.bucket.shovelCount = 0;
           st.tool = "pick";
         }
         e.preventDefault();
@@ -1053,7 +1065,30 @@ export default function MiningCastle() {
       st.mouse.x = p.x; st.mouse.y = p.y;
       prevMouse = { x: p.x, y: p.y };
 
-      if (st.tool === "bucket" && st.mouse.down && st.bucket.phase === "shoveling") {
+      if (st.tool === "pick" && st.mouse.down) {
+        // Plow/knock over settled particles with velocity-based force
+        const speed = Math.hypot(st.mouse.vx, st.mouse.vy);
+        if (speed > 0.5) {
+          const dirX = st.mouse.vx / speed;
+          const dirY = st.mouse.vy / speed;
+          for (const pt of st.particles) {
+            if (!pt.settled) continue;
+            const dx = pt.x - p.x, dy = pt.y - p.y;
+            const dist = Math.hypot(dx, dy);
+            if (dist < PLOW_RADIUS && dist > 1) {
+              const f = 1 - dist / PLOW_RADIUS;
+              // Force scales with drag speed: slow = nudge, fast = launch
+              const force = Math.min(speed * 1.8, 25);
+              const nx = dx / dist, ny = dy / dist;
+              pt.vx += (dirX * 0.7 + nx * 0.3) * force * f;
+              pt.vy += (dirY * 0.7 + ny * 0.3) * force * f - speed * 0.3 * f;
+              pt.settled = false;
+              pt.sf = 0;
+              pt.av = (Math.random() - 0.5) * 0.15;
+            }
+          }
+        }
+      } else if (st.tool === "bucket" && st.mouse.down && st.bucket.phase === "shoveling") {
         // Continuous scooping while dragging with shovel
         if (!hitBucket(p.x, p.y)) {
           shovelScoop(p.x, p.y);
